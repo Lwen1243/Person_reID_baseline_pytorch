@@ -17,7 +17,7 @@ import os
 import scipy.io
 import yaml
 import math
-from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_efficient, ft_net_NAS, ft_net_convnext, ft_net_convnextv2, PCB, PCB_test, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, set_gem_pooling
+from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_efficient, ft_net_NAS, ft_net_convnext, ft_net_convnextv2, PCB, PCB_test, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, ft_net_eva02, set_gem_pooling
 from utils import fuse_all_conv_bn
 #fp16
 try:
@@ -79,6 +79,8 @@ if 'use_hgnetv2_b6' in config:
     opt.use_hgnetv2_b6 = config['use_hgnetv2_b6']
 if 'use_convnextv2' in config:
     opt.use_convnextv2 = config['use_convnextv2']
+if 'use_eva02' in config:
+    opt.use_eva02 = config['use_eva02']
 if 'gem' in config:
     opt.gem = config['gem']
 if 'gem_p' in config:
@@ -124,7 +126,7 @@ if len(gpu_ids)>0:
 # We will use torchvision and torch.utils.data packages for loading the
 # data.
 #
-if opt.use_swin or opt.use_swin_large:
+if opt.use_swin or opt.use_swin_large or opt.use_convnextv2 or opt.use_resnet101 or opt.use_resnet152 or opt.use_hgnetv2_b6 or opt.use_eva02:
     h, w = 224, 224
 else:
     h, w = 256, 128
@@ -192,7 +194,7 @@ def extract_feature(model,dataloaders):
     #features = torch.FloatTensor()
     count = 0
     if opt.linear_num <= 0:
-        if opt.use_swin or opt.use_swinv2 or opt.use_dense or opt.use_convnext or opt.use_convnextv2:
+        if opt.use_swin or opt.use_swinv2 or opt.use_dense or opt.use_convnext or opt.use_convnextv2 or opt.use_eva02:
             opt.linear_num = 1024
         elif opt.use_swin_large:
             opt.linear_num = 1536
@@ -296,6 +298,8 @@ elif opt.use_swin_large:
     model_structure = ft_net_swin_large(opt.nclasses, linear_num=opt.linear_num)
 elif opt.use_hgnetv2_b6:
     model_structure = ft_net_hgnetv2_b6(opt.nclasses, linear_num=opt.linear_num)
+elif opt.use_eva02:
+    model_structure = ft_net_eva02(opt.nclasses, (h,w), linear_num=opt.linear_num)
 else:
     model_structure = ft_net(opt.nclasses, stride = opt.stride, ibn = opt.ibn, linear_num=opt.linear_num)
 

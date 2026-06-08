@@ -18,7 +18,7 @@ import os
 import collections
 from torch.optim import swa_utils
 from tqdm import tqdm
-from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_convnext, ft_net_convnextv2, ft_net_efficient, ft_net_NAS, PCB, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, set_gem_pooling
+from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_convnext, ft_net_convnextv2, ft_net_efficient, ft_net_NAS, PCB, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, ft_net_eva02, set_gem_pooling
 from random_erasing import RandomErasing
 from dgfolder import DGFolder
 import yaml
@@ -72,6 +72,7 @@ parser.add_argument('--use_resnet152', action='store_true', help='use resnet152'
 parser.add_argument('--use_swin_large', action='store_true', help='use swin large transformer 224x224' )
 parser.add_argument('--use_hgnetv2_b6', action='store_true', help='use HGNetV2 B6' )
 parser.add_argument('--use_convnextv2', action='store_true', help='use ConvNeXt V2' )
+parser.add_argument('--use_eva02', action='store_true', help='use EVA-02 Large (ViT, CLIP+MIM pretrain)' )
 parser.add_argument('--gem', action='store_true', help='use GeM pooling (p=3.0). Better than avg pooling for ReID.' )
 parser.add_argument('--gem_p', default=3.0, type=float, help='GeM pooling power. Default 3.0.' )
 # loss
@@ -120,7 +121,7 @@ if len(gpu_ids)>0:
 # ---------
 #
 
-if opt.use_swin or opt.use_swin_large or opt.use_convnextv2 or opt.use_resnet101 or opt.use_resnet152 or opt.use_hgnetv2_b6:
+if opt.use_swin or opt.use_swin_large or opt.use_convnextv2 or opt.use_resnet101 or opt.use_resnet152 or opt.use_hgnetv2_b6 or opt.use_eva02:
     h, w = 224, 224
 else:
     h, w = 256, 128
@@ -548,6 +549,8 @@ elif opt.use_swin_large:
     model = ft_net_swin_large(len(class_names), opt.droprate, opt.stride, circle = return_feature, linear_num=opt.linear_num)
 elif opt.use_hgnetv2_b6:
     model = ft_net_hgnetv2_b6(len(class_names), opt.droprate, opt.stride, circle = return_feature, linear_num=opt.linear_num)
+elif opt.use_eva02:
+    model = ft_net_eva02(len(class_names), (h, w), opt.droprate, opt.stride, circle = return_feature, linear_num=opt.linear_num)
 else:
     model = ft_net(len(class_names), opt.droprate, opt.stride, circle = return_feature, ibn=opt.ibn, linear_num=opt.linear_num, usam=opt.usam)
 

@@ -655,6 +655,40 @@ class ft_net_hgnetv2_b6(nn.Module):
         return x
 
 
+# Define the EVA-02 Large-based Model
+# EVA-02: "EVA-02: A Visual Representation for Neon Genesis", BAAI, 2023
+# CLIP + MIM pretraining, excellent for fine-grained retrieval
+class ft_net_eva02(nn.Module):
+
+    def __init__(self, class_num, input_size=(224, 224), droprate=0.5, stride=2, circle=False, linear_num=512):
+        super(ft_net_eva02, self).__init__()
+        model_ft = timm.create_model(
+            'eva02_large_patch14_448.mim_m38m_ft_in22k_in1k',
+            pretrained=True,
+            img_size=input_size,
+            drop_path_rate=0.2,
+        )
+        model_ft.head = nn.Sequential() # save memory
+        self.model = model_ft
+        self.circle = circle
+        self.avgpool1d = nn.AdaptiveAvgPool1d(1)
+        self.avgpool2d = nn.AdaptiveAvgPool2d((1,1))
+        # eva02_large embedding dim is 1024
+        self.classifier = ClassBlock(1024, class_num, droprate, linear=linear_num, return_f = circle)
+        print('Make sure timm >= 0.9.0 to support eva02 models.')
+
+    def forward(self, x):
+        x = self.model.forward_features(x)
+        # Handle both 3D (B,N,C) and 4D (B,C,H,W) output
+        if x.dim()==3:
+            x = self.avgpool1d(x.permute((0,2,1)))
+        else:
+            x = self.avgpool2d(x.permute((0,3,1,2)))
+        x = x.view(x.size(0), x.size(1))
+        x = self.classifier(x)
+        return x
+
+
 '''
 # debug model structure
 # Run this code with:
