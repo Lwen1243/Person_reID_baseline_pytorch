@@ -18,7 +18,7 @@ import os
 import scipy.io
 import yaml
 import math
-from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_efficient, ft_net_NAS, PCB, PCB_test
+from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_efficient, ft_net_NAS, ft_net_convnext, ft_net_convnextv2, PCB, PCB_test, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6
 
 #fp16
 try:
@@ -62,6 +62,18 @@ if 'use_efficient' in config:
     opt.use_efficient = config['use_efficient']
 if 'use_hr' in config:
     opt.use_hr = config['use_hr']
+if 'use_convnext' in config:
+    opt.use_convnext = config['use_convnext']
+if 'use_convnextv2' in config:
+    opt.use_convnextv2 = config['use_convnextv2']
+if 'use_resnet101' in config:
+    opt.use_resnet101 = config['use_resnet101']
+if 'use_resnet152' in config:
+    opt.use_resnet152 = config['use_resnet152']
+if 'use_swin_large' in config:
+    opt.use_swin_large = config['use_swin_large']
+if 'use_hgnetv2_b6' in config:
+    opt.use_hgnetv2_b6 = config['use_hgnetv2_b6']
 
 if 'nclasses' in config: # tp compatible with old config files
     opt.nclasses = config['nclasses']
@@ -103,7 +115,7 @@ if len(gpu_ids)>0:
 # We will use torchvision and torch.utils.data packages for loading the
 # data.
 #
-if opt.use_swin:
+if opt.use_swin or opt.use_swin_large:
     h, w = 224, 224
 else:
     h, w = 256, 128
@@ -170,8 +182,10 @@ def extract_feature(model,dataloaders):
     #features = torch.FloatTensor()
     count = 0
     if opt.linear_num <= 0:
-        if opt.use_swin or opt.use_dense:
+        if opt.use_swin or opt.use_dense or opt.use_convnext or opt.use_convnextv2:
             opt.linear_num = 1024
+        elif opt.use_swin_large:
+            opt.linear_num = 1536
         elif opt.use_efficient:
             opt.linear_num = 1792
         elif opt.use_NAS:
@@ -257,6 +271,18 @@ elif opt.use_efficient:
     model_structure = ft_net_efficient(opt.nclasses, linear_num=opt.linear_num)
 elif opt.use_hr:
     model_structure = ft_net_hr(opt.nclasses, linear_num=opt.linear_num)
+elif opt.use_convnext:
+    model_structure = ft_net_convnext(opt.nclasses, linear_num=opt.linear_num)
+elif opt.use_convnextv2:
+    model_structure = ft_net_convnextv2(opt.nclasses, linear_num=opt.linear_num)
+elif opt.use_resnet101:
+    model_structure = ft_net_resnet101(opt.nclasses, stride = opt.stride, ibn = opt.ibn, linear_num=opt.linear_num)
+elif opt.use_resnet152:
+    model_structure = ft_net_resnet152(opt.nclasses, stride = opt.stride, ibn = opt.ibn, linear_num=opt.linear_num)
+elif opt.use_swin_large:
+    model_structure = ft_net_swin_large(opt.nclasses, linear_num=opt.linear_num)
+elif opt.use_hgnetv2_b6:
+    model_structure = ft_net_hgnetv2_b6(opt.nclasses, linear_num=opt.linear_num)
 else:
     model_structure = ft_net(opt.nclasses, stride = opt.stride, ibn = opt.ibn, linear_num=opt.linear_num)
 

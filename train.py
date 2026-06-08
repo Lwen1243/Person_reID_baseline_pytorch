@@ -18,7 +18,7 @@ import os
 import collections
 from torch.optim import swa_utils
 from tqdm import tqdm
-from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_convnext, ft_net_efficient, ft_net_NAS, PCB
+from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_convnext, ft_net_convnextv2, ft_net_efficient, ft_net_NAS, PCB, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, set_gem_pooling
 from random_erasing import RandomErasing
 from dgfolder import DGFolder
 import yaml
@@ -67,6 +67,13 @@ parser.add_argument('--use_convnext', action='store_true', help='use ConvNext' )
 parser.add_argument('--ibn', action='store_true', help='use resnet+ibn' )
 parser.add_argument('--usam', action='store_true', help='use resnet+usam (Joint Representation Learning and Keypoint Detection for Cross-view Geo-localization. TIP2022)' )
 parser.add_argument('--PCB', action='store_true', help='use PCB+ResNet50' )
+parser.add_argument('--use_resnet101', action='store_true', help='use resnet101' )
+parser.add_argument('--use_resnet152', action='store_true', help='use resnet152' )
+parser.add_argument('--use_swin_large', action='store_true', help='use swin large transformer 224x224' )
+parser.add_argument('--use_hgnetv2_b6', action='store_true', help='use HGNetV2 B6' )
+parser.add_argument('--use_convnextv2', action='store_true', help='use ConvNeXt V2' )
+parser.add_argument('--gem', action='store_true', help='use GeM pooling (p=3.0). Better than avg pooling for ReID.' )
+parser.add_argument('--gem_p', default=3.0, type=float, help='GeM pooling power. Default 3.0.' )
 # loss
 parser.add_argument('--warm_epoch', default=0, type=int, help='the first K epoch that needs warm up')
 parser.add_argument('--arcface', action='store_true', help='use ArcFace loss' )
@@ -113,7 +120,7 @@ if len(gpu_ids)>0:
 # ---------
 #
 
-if opt.use_swin:
+if opt.use_swin or opt.use_swin_large or opt.use_convnextv2 or opt.use_resnet101 or opt.use_resnet152 or opt.use_hgnetv2_b6:
     h, w = 224, 224
 else:
     h, w = 256, 128
@@ -531,6 +538,16 @@ elif opt.use_hr:
     model = ft_net_hr(len(class_names), opt.droprate, circle = return_feature, linear_num=opt.linear_num)
 elif opt.use_convnext:
     model = ft_net_convnext(len(class_names), opt.droprate, circle = return_feature, linear_num=opt.linear_num)
+elif opt.use_convnextv2:
+    model = ft_net_convnextv2(len(class_names), opt.droprate, circle = return_feature, linear_num=opt.linear_num)
+elif opt.use_resnet101:
+    model = ft_net_resnet101(len(class_names), opt.droprate, opt.stride, circle = return_feature, ibn=opt.ibn, linear_num=opt.linear_num, usam=opt.usam)
+elif opt.use_resnet152:
+    model = ft_net_resnet152(len(class_names), opt.droprate, opt.stride, circle = return_feature, ibn=opt.ibn, linear_num=opt.linear_num, usam=opt.usam)
+elif opt.use_swin_large:
+    model = ft_net_swin_large(len(class_names), opt.droprate, opt.stride, circle = return_feature, linear_num=opt.linear_num)
+elif opt.use_hgnetv2_b6:
+    model = ft_net_hgnetv2_b6(len(class_names), opt.droprate, opt.stride, circle = return_feature, linear_num=opt.linear_num)
 else:
     model = ft_net(len(class_names), opt.droprate, opt.stride, circle = return_feature, ibn=opt.ibn, linear_num=opt.linear_num, usam=opt.usam)
 
@@ -538,6 +555,10 @@ if opt.PCB:
     model = PCB(len(class_names))
 
 opt.nclasses = len(class_names)
+
+# Replace avg pooling with GeM pooling (if enabled)
+set_gem_pooling(model, use_gem=opt.gem, gem_p=opt.gem_p)
+
 print(model)
 # model to gpu
 model = model.cuda()

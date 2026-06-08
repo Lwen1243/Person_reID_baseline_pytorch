@@ -19,7 +19,7 @@ import yaml
 import math
 from torch.optim import swa_utils
 from tqdm import tqdm
-from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_efficient, ft_net_NAS, ft_net_convnext, PCB, PCB_test
+from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_efficient, ft_net_NAS, ft_net_convnext, ft_net_convnextv2, PCB, PCB_test, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, set_gem_pooling
 from utils import fuse_all_conv_bn
 version =  torch.__version__
 
@@ -42,6 +42,10 @@ parser.add_argument('--multi', action='store_true', help='use multiple query' )
 parser.add_argument('--fp16', action='store_true', help='use fp16.' )
 parser.add_argument('--ibn', action='store_true', help='use ibn.' )
 parser.add_argument('--usam', action='store_true', help='use usam.' )
+parser.add_argument('--use_resnet101', action='store_true', help='use resnet101.' )
+parser.add_argument('--use_resnet152', action='store_true', help='use resnet152.' )
+parser.add_argument('--use_swin_large', action='store_true', help='use swin_large.' )
+parser.add_argument('--use_hgnetv2_b6', action='store_true', help='use hgnetv2_b6.' )
 parser.add_argument('--ms',default='1', type=str,help='multiple_scale: e.g. 1 1,1.1  1,1.1,1.2')
 
 opt = parser.parse_args()
@@ -67,6 +71,20 @@ if 'use_efficient' in config:
     opt.use_efficient = config['use_efficient']
 if 'use_hr' in config:
     opt.use_hr = config['use_hr']
+if 'use_resnet101' in config:
+    opt.use_resnet101 = config['use_resnet101']
+if 'use_resnet152' in config:
+    opt.use_resnet152 = config['use_resnet152']
+if 'use_swin_large' in config:
+    opt.use_swin_large = config['use_swin_large']
+if 'use_hgnetv2_b6' in config:
+    opt.use_hgnetv2_b6 = config['use_hgnetv2_b6']
+if 'use_convnextv2' in config:
+    opt.use_convnextv2 = config['use_convnextv2']
+if 'gem' in config:
+    opt.gem = config['gem']
+if 'gem_p' in config:
+    opt.gem_p = config['gem_p']
 
 if 'nclasses' in config: # tp compatible with old config files
     opt.nclasses = config['nclasses']
@@ -110,7 +128,7 @@ if len(gpu_ids)>0:
 # We will use torchvision and torch.utils.data packages for loading the
 # data.
 #
-if opt.use_swin:
+if opt.use_swin or opt.use_swin_large:
     h, w = 224, 224
 else:
     h, w = 256, 128
@@ -193,8 +211,10 @@ def extract_feature(model,dataloaders):
     # count = 0
     pbar = tqdm()
     if opt.linear_num <= 0:
-        if opt.use_swin or opt.use_swinv2 or opt.use_dense or opt.use_convnext:
+        if opt.use_swin or opt.use_swinv2 or opt.use_dense or opt.use_convnext or opt.use_convnextv2:
             opt.linear_num = 1024
+        elif opt.use_swin_large:
+            opt.linear_num = 1536
         elif opt.use_dino:
             opt.linear_num = 768
         elif opt.use_efficient:
@@ -287,10 +307,20 @@ elif opt.use_dino:
     model_structure = ft_net_dino(opt.nclasses, (h,w),  linear_num=opt.linear_num)
 elif opt.use_convnext:
     model_structure = ft_net_convnext(opt.nclasses, linear_num=opt.linear_num)
+elif opt.use_convnextv2:
+    model_structure = ft_net_convnextv2(opt.nclasses, linear_num=opt.linear_num)
 elif opt.use_efficient:
     model_structure = ft_net_efficient(opt.nclasses, linear_num=opt.linear_num)
 elif opt.use_hr:
     model_structure = ft_net_hr(opt.nclasses, linear_num=opt.linear_num)
+elif opt.use_resnet101:
+    model_structure = ft_net_resnet101(opt.nclasses, stride = opt.stride, ibn = opt.ibn, linear_num=opt.linear_num, usam=opt.usam)
+elif opt.use_resnet152:
+    model_structure = ft_net_resnet152(opt.nclasses, stride = opt.stride, ibn = opt.ibn, linear_num=opt.linear_num, usam=opt.usam)
+elif opt.use_swin_large:
+    model_structure = ft_net_swin_large(opt.nclasses, linear_num=opt.linear_num)
+elif opt.use_hgnetv2_b6:
+    model_structure = ft_net_hgnetv2_b6(opt.nclasses, linear_num=opt.linear_num)
 else:
     model_structure = ft_net(opt.nclasses, stride = opt.stride, ibn = opt.ibn, linear_num=opt.linear_num, usam=opt.usam)
 
@@ -315,6 +345,10 @@ else:
         #model[1].classifier = nn.Sequential()
     #else:
         model.classifier.classifier = nn.Sequential()
+
+# Replace avg pooling with GeM pooling (if enabled)
+if opt.gem:
+    set_gem_pooling(model, use_gem=opt.gem, gem_p=opt.gem_p)
 
 # Change to test mode
 model = model.eval()

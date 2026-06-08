@@ -63,6 +63,70 @@ class USAM(nn.Module):
 
         return output
 
+######################################################################
+# GeM Pooling (Generalized Mean Pooling)
+# "Fine-tuning CNN Image Retrieval with No Human Annotation", Radenovic et al., TPAMI 2018
+######################################################################
+class GemPool(nn.Module):
+    """Generalized Mean Pooling. p=3.0 is commonly used for ReID."""
+    def __init__(self, p=3.0, eps=1e-6):
+        super(GemPool, self).__init__()
+        self.p = nn.Parameter(torch.ones(1) * p)
+        self.eps = eps
+
+    def forward(self, x):
+        return self.gem(x, p=self.p, eps=self.eps)
+
+    @staticmethod
+    def gem(x, p=3.0, eps=1e-6):
+        return torch.nn.functional.avg_pool2d(
+            x.clamp(min=eps).pow(p), (x.size(-2), x.size(-1))
+        ).pow(1.0 / p)
+
+def set_gem_pooling(model, use_gem=False, gem_p=3.0):
+    """Replace AdaptiveAvgPool2d with GeM pooling if use_gem is True.
+    Only applies to CNN-based backbones (not transformers).
+    Idempotent: if GeM already exists, only updates p value."""
+    if not use_gem:
+        return
+    model_type = type(model).__name__
+
+    # Determine which attribute holds the pooling layer
+    pool_attr_path = None
+    if model_type in ['ft_net', 'ft_net_resnet101', 'ft_net_resnet152', 'ft_net_middle']:
+        pool_attr_path = ('model', 'avgpool')
+    elif model_type in ['ft_net_convnext', 'ft_net_convnextv2', 'ft_net_hr', 'ft_net_hgnetv2_b6']:
+        pool_attr_path = ('avgpool',)
+    elif model_type == 'ft_net_dense':
+        pool_attr_path = ('model', 'features', 'avgpool')
+    elif model_type == 'ft_net_efficient':
+        pool_attr_path = ('model', 'avgpool')
+    elif model_type == 'ft_net_NAS':
+        pool_attr_path = ('model', 'avg_pool')
+
+    if pool_attr_path is None:
+        return  # Transformer-based model, skip
+
+    # Navigate to the parent and the pool attribute name
+    parent = model
+    for attr in pool_attr_path[:-1]:
+        if hasattr(parent, attr):
+            parent = getattr(parent, attr)
+        else:
+            return
+    pool_attr = pool_attr_path[-1]
+    if not hasattr(parent, pool_attr):
+        return
+
+    current_pool = getattr(parent, pool_attr)
+    if isinstance(current_pool, GemPool):
+        # Already GeM, just update p value
+        current_pool.p.data.fill_(gem_p)
+    elif isinstance(current_pool, nn.AdaptiveAvgPool2d):
+        # Replace with GeM
+        setattr(parent, pool_attr, GemPool(p=gem_p))
+    # else: some other pooling type, leave as-is
+
 def activate_drop(m):
     classname = m.__class__.__name__
     if classname.find('Drop') != -1:
@@ -239,6 +303,28 @@ class ft_net_convnext(nn.Module):
         self.circle = circle
         self.avgpool = nn.AdaptiveAvgPool2d((1,1))
         self.classifier = ClassBlock(1024, class_num, droprate, linear=linear_num, return_f = circle)
+
+    def forward(self, x):
+        x = self.model.forward_features(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), x.size(1))
+        x = self.classifier(x)
+        return x
+
+
+# Define the ConvNeXt V2-based Model
+class ft_net_convnextv2(nn.Module):
+
+    def __init__(self, class_num, droprate=0.5, stride=2, circle=False, linear_num=512):
+        super(ft_net_convnextv2, self).__init__()
+        model_ft = timm.create_model('convnextv2_huge.fcmae_ft_in1k', pretrained=True, drop_path_rate = 0.2)
+        # avg pooling to global pooling
+        model_ft.head = nn.Sequential() # save memory
+        self.model = model_ft
+        self.circle = circle
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        # convnextv2_huge feature dim is 2816
+        self.classifier = ClassBlock(2816, class_num, droprate, linear=linear_num, return_f = circle)
 
     def forward(self, x):
         x = self.model.forward_features(x)
@@ -440,6 +526,135 @@ class PCB_test(nn.Module):
         x = self.avgpool(x)
         y = x.view(x.size(0),x.size(1),x.size(2))
         return y
+# Define the ResNet101-based Model
+class ft_net_resnet101(nn.Module):
+
+    def __init__(self, class_num=751, droprate=0.5, stride=2, circle=False, ibn=False, linear_num=512, usam=False):
+        super(ft_net_resnet101, self).__init__()
+        model_ft = models.resnet101(pretrained=True)
+        if ibn==True:
+            model_ft = torch.hub.load('XingangPan/IBN-Net', 'resnet101_ibn_a', pretrained=True)
+        # avg pooling to global pooling
+        if stride == 1:
+            model_ft.layer4[0].downsample[0].stride = (1,1)
+            model_ft.layer4[0].conv2.stride = (1,1)
+        model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        self.model = model_ft
+        self.circle = circle
+        self.classifier = ClassBlock(2048, class_num, droprate, linear=linear_num, return_f = circle)
+        self.usam = usam
+        if usam:
+            self.usam_1 = USAM()
+            self.usam_2 = USAM()
+
+    def forward(self, x):
+        x = self.model.conv1(x)
+        x = self.model.bn1(x)
+        x = self.model.relu(x)
+        if self.usam:
+            x = self.usam_1(x)
+        x = self.model.maxpool(x)
+        x = self.model.layer1(x)
+        if self.usam:
+            x = self.usam_2(x)
+        x = self.model.layer2(x)
+        x = self.model.layer3(x)
+        x = self.model.layer4(x)
+        x = self.model.avgpool(x)
+        x = x.view(x.size(0), x.size(1))
+        x = self.classifier(x)
+        return x
+
+
+# Define the ResNet152-based Model
+class ft_net_resnet152(nn.Module):
+
+    def __init__(self, class_num=751, droprate=0.5, stride=2, circle=False, ibn=False, linear_num=512, usam=False):
+        super(ft_net_resnet152, self).__init__()
+        model_ft = models.resnet152(pretrained=True)
+        if ibn==True:
+            model_ft = torch.hub.load('XingangPan/IBN-Net', 'resnet152_ibn_a', pretrained=True)
+        # avg pooling to global pooling
+        if stride == 1:
+            model_ft.layer4[0].downsample[0].stride = (1,1)
+            model_ft.layer4[0].conv2.stride = (1,1)
+        model_ft.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        self.model = model_ft
+        self.circle = circle
+        self.classifier = ClassBlock(2048, class_num, droprate, linear=linear_num, return_f = circle)
+        self.usam = usam
+        if usam:
+            self.usam_1 = USAM()
+            self.usam_2 = USAM()
+
+    def forward(self, x):
+        x = self.model.conv1(x)
+        x = self.model.bn1(x)
+        x = self.model.relu(x)
+        if self.usam:
+            x = self.usam_1(x)
+        x = self.model.maxpool(x)
+        x = self.model.layer1(x)
+        if self.usam:
+            x = self.usam_2(x)
+        x = self.model.layer2(x)
+        x = self.model.layer3(x)
+        x = self.model.layer4(x)
+        x = self.model.avgpool(x)
+        x = x.view(x.size(0), x.size(1))
+        x = self.classifier(x)
+        return x
+
+
+# Define the Swin-Large Model
+class ft_net_swin_large(nn.Module):
+
+    def __init__(self, class_num, droprate=0.5, stride=2, circle=False, linear_num=512):
+        super(ft_net_swin_large, self).__init__()
+        model_ft = timm.create_model('swin_large_patch4_window7_224', pretrained=True, drop_path_rate = 0.2)
+        model_ft.head = nn.Sequential() # save memory
+        self.model = model_ft
+        self.circle = circle
+        self.avgpool1d = nn.AdaptiveAvgPool1d(1)
+        self.avgpool2d = nn.AdaptiveAvgPool2d((1,1))
+        # swin_large feature dim is 1536
+        self.classifier = ClassBlock(1536, class_num, droprate, linear=linear_num, return_f = circle)
+        print('Make sure timm > 0.6.0 and you can install latest timm version by pip install git+https://github.com/rwightman/pytorch-image-models.git')
+
+    def forward(self, x):
+        x = self.model.forward_features(x)
+        # swin is update in latest timm>0.6.0, so I add the following two lines.
+        if x.dim()==3:
+            x = self.avgpool1d(x.permute((0,2,1)))
+        else: 
+            x = self.avgpool2d(x.permute((0,3,1,2)))
+        x = x.view(x.size(0), x.size(1))
+        x = self.classifier(x)
+        return x
+
+
+# Define the HGNetV2 B6-based Model
+class ft_net_hgnetv2_b6(nn.Module):
+
+    def __init__(self, class_num, droprate=0.5, stride=2, circle=False, linear_num=512):
+        super(ft_net_hgnetv2_b6, self).__init__()
+        model_ft = timm.create_model('hgnetv2_b6', pretrained=True, drop_path_rate = 0.2)
+        model_ft.head = nn.Sequential() # save memory
+        self.model = model_ft
+        self.circle = circle
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        # hgnetv2_b6 last stage output is 2048 channels
+        self.classifier = ClassBlock(2048, class_num, droprate, linear=linear_num, return_f = circle)
+        print('Make sure timm >= 0.9.0 to support hgnetv2 models.')
+
+    def forward(self, x):
+        x = self.model.forward_features(x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), x.size(1))
+        x = self.classifier(x)
+        return x
+
+
 '''
 # debug model structure
 # Run this code with:
