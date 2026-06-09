@@ -378,6 +378,11 @@ if use_gpu:
 print('Here I fuse conv and bn for faster inference, and it does not work for transformers. Comment out this following line if you do not want to fuse conv&bn.')
 model = fuse_all_conv_bn(model)
 
+# For SBS models, disable feature-return mode so forward() outputs
+# only the BNNeck feature (f_i) instead of (logits, f_t) tuple.
+if opt.use_sbs or opt.use_sbs101:
+    model.return_feat = False
+
 # We can optionally trace the forward method with PyTorch JIT so it runs faster.
 # To do so, we can call `.trace` on the reparamtrized module with dummy inputs
 # expected by the module.

@@ -266,6 +266,7 @@ class ft_net_sbs(nn.Module):
         self.classifier.linear_num = 2048  # for compatibility with training code
 
         self.linear_num = 2048  # SBS uses full 2048-d features (no bottleneck)
+        self.return_feat = True  # True → return (logits, f_t); False → return f_i only
 
     def forward(self, x):
         x = self.model.conv1(x)
@@ -280,11 +281,11 @@ class ft_net_sbs(nn.Module):
         f_t = x.view(x.size(0), x.size(1))  # pre-BN feature (2048-d, for triplet)
         f_i = self.bn_neck(f_t)             # BNNeck feature (for ID classification)
 
-        if self.training:
+        if self.return_feat:
             logits = self.classifier(f_i)
-            return logits, f_t  # training: (logits, raw feature for metric loss)
+            return logits, f_t  # training/validation: (logits, raw feature)
         else:
-            return f_i  # inference: return BN feature
+            return f_i  # inference only: return BN feature
 
 # Define the swin_base_patch4_window7_224 Model
 # pytorch > 1.6

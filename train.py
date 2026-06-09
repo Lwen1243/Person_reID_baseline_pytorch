@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
 from torchvision import datasets, transforms
+from torch.utils.data import Sampler
 import torch.backends.cudnn as cudnn
 import matplotlib
 matplotlib.use('agg')
@@ -16,6 +17,7 @@ import matplotlib.pyplot as plt
 import time
 import os
 import collections
+import random
 from torch.optim import swa_utils
 from tqdm import tqdm
 from model import ft_net, ft_net_sbs, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_convnext, ft_net_convnextv2, ft_net_efficient, ft_net_NAS, PCB, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, ft_net_eva02, set_gem_pooling
@@ -28,7 +30,53 @@ from instance_loss import InstanceLoss
 from ODFA import ODFA
 from utils import save_network
 version =  torch.__version__
-from pytorch_metric_learning import losses, miners #pip install pytorch-metric-learning
+from pytorch_metric_learning import losses, miners, distances #pip install pytorch-metric-learning
+
+######################################################################
+# PK Sampler for triplet / metric learning
+# Each batch: P identities × K instances = batch_size
+######################################################################
+class RandomIdentitySampler(Sampler):
+    """Randomly sample P identities, then sample K instances for each identity.
+
+    Essential for triplet loss: without PK sampling, the probability of
+    having a positive pair in a batch is near zero for large-scale ReID.
+    """
+    def __init__(self, dataset, batch_size, num_instances=4):
+        self.batch_size = batch_size
+        self.num_instances = num_instances          # K
+        self.num_pids_per_batch = batch_size // num_instances  # P
+
+        # Build index dict: label → list of image indices
+        self.index_dic = {}
+        for idx, (_, label) in enumerate(dataset.imgs):
+            label = int(label)
+            if label not in self.index_dic:
+                self.index_dic[label] = []
+            self.index_dic[label].append(idx)
+        self.pids = list(self.index_dic.keys())
+
+        # Filter out pids with fewer than K images
+        self.pids = [pid for pid in self.pids if len(self.index_dic[pid]) >= num_instances]
+        if len(self.pids) < self.num_pids_per_batch:
+            raise ValueError(f'Only {len(self.pids)} identities have >= {num_instances} images, '
+                             f'but need {self.num_pids_per_batch}. Reduce batch_size or num_instances.')
+
+        self.length = len(dataset) // batch_size * batch_size
+
+    def __iter__(self):
+        batch_idxs = []
+        for _ in range(self.length // self.batch_size):
+            sampled_pids = random.sample(self.pids, self.num_pids_per_batch)
+            for pid in sampled_pids:
+                batch_idxs.extend(
+                    random.sample(self.index_dic[pid], self.num_instances)
+                )
+        random.shuffle(batch_idxs)
+        return iter(batch_idxs)
+
+    def __len__(self):
+        return self.length
 
 ######################################################################
 # Options
@@ -180,10 +228,28 @@ image_datasets['train'] = datasets.ImageFolder(os.path.join(data_dir, 'train' + 
 image_datasets['val'] = datasets.ImageFolder(os.path.join(data_dir, 'val'),
                                           data_transforms['val'])
 
-dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=opt.batchsize,
-                                             shuffle=True, num_workers=8, pin_memory=True, drop_last=True,
-                                             prefetch_factor=4, persistent_workers=True)
-              for x in ['train', 'val']}
+# Use PK sampler when metric learning losses (triplet, circle, etc.) are active.
+# Random sampling with shuffle otherwise.
+return_feature = opt.arcface or opt.cosface or opt.circle or opt.triplet or opt.contrast or opt.instance or opt.lifted or opt.sphere
+if return_feature:
+    num_instances = 4  # K: each ID has K images per batch
+    train_sampler = RandomIdentitySampler(image_datasets['train'], opt.batchsize, num_instances)
+    print(f'Using PK sampler: {opt.batchsize // num_instances} identities × {num_instances} instances per batch')
+else:
+    train_sampler = None
+    print('Using random shuffle sampler (no metric loss active)')
+
+dataloaders = {}
+dataloaders['train'] = torch.utils.data.DataLoader(
+    image_datasets['train'], batch_size=opt.batchsize,
+    sampler=train_sampler,
+    shuffle=(train_sampler is None),
+    num_workers=8, pin_memory=True, drop_last=True,
+    prefetch_factor=4, persistent_workers=True)
+dataloaders['val'] = torch.utils.data.DataLoader(
+    image_datasets['val'], batch_size=opt.batchsize,
+    shuffle=True, num_workers=8, pin_memory=True,
+    drop_last=True, prefetch_factor=4, persistent_workers=True)
 # Use extra DG-Market Dataset for training. Please download it from https://github.com/NVlabs/DG-Net#dg-market.
 if opt.DG:
     if not os.path.isdir('../DG-Market'):
@@ -252,8 +318,10 @@ def train_model(model, criterion, optimizer, scheduler, scaler, num_epochs=25):
     if opt.circle:
         criterion_circle = CircleLoss(m=0.25, gamma=32) # gamma = 64 may lead to a better result.
     if opt.triplet:
-        miner = miners.MultiSimilarityMiner()
-        criterion_triplet = losses.TripletMarginLoss(margin=0.3)
+        # Use unified CosineSimilarity for both miner and loss (features are L2-normalized)
+        dist = distances.CosineSimilarity()
+        miner = miners.MultiSimilarityMiner(distance=dist)
+        criterion_triplet = losses.TripletMarginLoss(margin=0.3, distance=dist)
     if opt.lifted:
         criterion_lifted = losses.GeneralizedLiftedStructureLoss(neg_margin=1, pos_margin=0)
     if opt.contrast: 
@@ -322,7 +390,6 @@ def train_model(model, criterion, optimizer, scheduler, scaler, num_epochs=25):
 
                 sm = nn.Softmax(dim=1)
                 log_sm = nn.LogSoftmax(dim=1)
-                return_feature = opt.arcface or opt.cosface or opt.circle or opt.triplet or opt.contrast or opt.instance or opt.lifted or opt.sphere
                 if return_feature: 
                     logits, ff = outputs
                     fnorm = torch.norm(ff, p=2, dim=1, keepdim=True)
@@ -524,8 +591,6 @@ def draw_curve(current_epoch):
 #
 # Load a pretrainied model and reset final fully connected layer.
 #
-
-return_feature = opt.arcface or opt.cosface or opt.circle or opt.triplet or opt.contrast or opt.instance or opt.lifted or opt.sphere
 
 # SBS-ResNet requires a metric learning loss (e.g. --triplet) to benefit from BNNeck.
 # The model always returns (logits, raw_feature) during training.
