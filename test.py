@@ -19,7 +19,7 @@ import yaml
 import math
 from torch.optim import swa_utils
 from tqdm import tqdm
-from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_efficient, ft_net_NAS, ft_net_convnext, ft_net_convnextv2, PCB, PCB_test, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, ft_net_eva02, set_gem_pooling
+from model import ft_net, ft_net_sbs, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_efficient, ft_net_NAS, ft_net_convnext, ft_net_convnextv2, PCB, PCB_test, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, ft_net_eva02, set_gem_pooling
 from utils import fuse_all_conv_bn
 version =  torch.__version__
 
@@ -46,6 +46,9 @@ parser.add_argument('--use_resnet101', action='store_true', help='use resnet101.
 parser.add_argument('--use_resnet152', action='store_true', help='use resnet152.' )
 parser.add_argument('--use_swin_large', action='store_true', help='use swin_large.' )
 parser.add_argument('--use_hgnetv2_b6', action='store_true', help='use hgnetv2_b6.' )
+parser.add_argument('--use_eva02', action='store_true', help='use eva02.' )
+parser.add_argument('--use_sbs', action='store_true', help='use SBS-ResNet50.' )
+parser.add_argument('--use_sbs101', action='store_true', help='use SBS-ResNet101.' )
 parser.add_argument('--ms',default='1', type=str,help='multiple_scale: e.g. 1 1,1.1  1,1.1,1.2')
 
 opt = parser.parse_args()
@@ -83,6 +86,10 @@ if 'use_convnextv2' in config:
     opt.use_convnextv2 = config['use_convnextv2']
 if 'use_eva02' in config:
     opt.use_eva02 = config['use_eva02']
+if 'use_sbs' in config:
+    opt.use_sbs = config['use_sbs']
+if 'use_sbs101' in config:
+    opt.use_sbs101 = config['use_sbs101']
 if 'gem' in config:
     opt.gem = config['gem']
 if 'gem_p' in config:
@@ -130,8 +137,10 @@ if len(gpu_ids)>0:
 # We will use torchvision and torch.utils.data packages for loading the
 # data.
 #
-if opt.use_swin or opt.use_swin_large or opt.use_convnextv2 or opt.use_resnet101 or opt.use_resnet152 or opt.use_hgnetv2_b6 or opt.use_eva02:
+if opt.use_swin or opt.use_swin_large or opt.use_convnextv2 or opt.use_resnet101 or opt.use_resnet152 or opt.use_hgnetv2_b6 or opt.use_eva02 or opt.use_sbs101:
     h, w = 224, 224
+elif opt.use_sbs:
+    h, w = 256, 128  # SBS-50 uses standard 256x128
 else:
     h, w = 256, 128
 
@@ -212,8 +221,10 @@ def extract_feature(model,dataloaders):
     #features = torch.FloatTensor()
     # count = 0
     pbar = tqdm()
-    if opt.linear_num <= 0:
-        if opt.use_swin or opt.use_swinv2 or opt.use_dense or opt.use_convnext or opt.use_convnextv2 or opt.use_eva02:
+    if opt.linear_num <= 0 or opt.use_sbs or opt.use_sbs101:  # SBS always uses 2048-d features (from BNNeck)
+        if opt.use_sbs or opt.use_sbs101:
+            opt.linear_num = 2048
+        elif opt.use_swin or opt.use_swinv2 or opt.use_dense or opt.use_convnext or opt.use_convnextv2 or opt.use_eva02:
             opt.linear_num = 1024
         elif opt.use_swin_large:
             opt.linear_num = 1536
@@ -325,6 +336,10 @@ elif opt.use_hgnetv2_b6:
     model_structure = ft_net_hgnetv2_b6(opt.nclasses, linear_num=opt.linear_num)
 elif opt.use_eva02:
     model_structure = ft_net_eva02(opt.nclasses, (h,w), linear_num=opt.linear_num)
+elif opt.use_sbs:
+    model_structure = ft_net_sbs(opt.nclasses, ibn=opt.ibn, linear_num=opt.linear_num, backbone='resnet50')
+elif opt.use_sbs101:
+    model_structure = ft_net_sbs(opt.nclasses, ibn=opt.ibn, linear_num=opt.linear_num, backbone='resnet101')
 else:
     model_structure = ft_net(opt.nclasses, stride = opt.stride, ibn = opt.ibn, linear_num=opt.linear_num, usam=opt.usam)
 

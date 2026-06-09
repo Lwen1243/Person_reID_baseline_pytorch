@@ -93,7 +93,7 @@ def set_gem_pooling(model, use_gem=False, gem_p=3.0):
 
     # Determine which attribute holds the pooling layer
     pool_attr_path = None
-    if model_type in ['ft_net', 'ft_net_resnet101', 'ft_net_resnet152', 'ft_net_middle']:
+    if model_type in ['ft_net', 'ft_net_sbs', 'ft_net_resnet101', 'ft_net_resnet152', 'ft_net_middle']:
         pool_attr_path = ('model', 'avgpool')
     elif model_type in ['ft_net_convnext', 'ft_net_convnextv2', 'ft_net_hr', 'ft_net_hgnetv2_b6']:
         pool_attr_path = ('avgpool',)
@@ -210,6 +210,81 @@ class ft_net(nn.Module):
         x = self.classifier(x)
         return x
 
+
+# Define the SBS-ResNet Model (Strong Baseline)
+# "Bag of Tricks and A Strong Baseline for Deep Person Re-identification", Luo et al., CVPRW 2019
+class ft_net_sbs(nn.Module):
+    """Strong Baseline ResNet for Person ReID.
+    Supports ResNet50 (default), ResNet101, and ResNet152.
+
+    Key improvements over vanilla ResNet:
+    1. Last stride = 1 (larger spatial feature maps: 16×8 vs 8×4 for 256×128 input)
+    2. BNNeck: BatchNorm1d between backbone features and classifier
+       - Pre-BN feature (f_t) → triplet / metric learning losses
+       - Post-BN feature (f_i) → ID classification loss
+    3. During inference: BNNeck feature is used as the final representation
+    """
+    def __init__(self, class_num=751, droprate=0.5, ibn=False, linear_num=0, backbone='resnet50'):
+        super(ft_net_sbs, self).__init__()
+
+        # ---- Backbone selection ----
+        backbone_model = {
+            'resnet50':  models.resnet50,
+            'resnet101': models.resnet101,
+            'resnet152': models.resnet152,
+        }
+        ibn_name = {
+            'resnet50':  'resnet50_ibn_a',
+            'resnet101': 'resnet101_ibn_a',
+            'resnet152': 'resnet152_ibn_a',
+        }
+        if backbone not in backbone_model:
+            raise ValueError(f"Unsupported backbone: {backbone}. Choose from {list(backbone_model.keys())}")
+
+        if ibn:
+            model_ft = torch.hub.load('XingangPan/IBN-Net', ibn_name[backbone], pretrained=True)
+        else:
+            model_ft = backbone_model[backbone](pretrained=True)
+
+        # ---- Critical: last stride = 1 for larger feature maps ----
+        model_ft.layer4[0].downsample[0].stride = (1, 1)
+        model_ft.layer4[0].conv2.stride = (1, 1)
+
+        model_ft.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.model = model_ft
+        self.backbone = backbone
+
+        # ---- BNNeck: Batch Normalization Neck ----
+        # ResNet50/101/152 all output 2048-d features
+        self.bn_neck = nn.BatchNorm1d(2048)
+        self.bn_neck.bias.requires_grad_(False)  # no bias, following the paper
+        self.bn_neck.apply(weights_init_kaiming)
+
+        # ---- ID Classifier ----
+        self.classifier = nn.Linear(2048, class_num, bias=False)
+        self.classifier.apply(weights_init_classifier)
+        self.classifier.linear_num = 2048  # for compatibility with training code
+
+        self.linear_num = 2048  # SBS uses full 2048-d features (no bottleneck)
+
+    def forward(self, x):
+        x = self.model.conv1(x)
+        x = self.model.bn1(x)
+        x = self.model.relu(x)
+        x = self.model.maxpool(x)
+        x = self.model.layer1(x)
+        x = self.model.layer2(x)
+        x = self.model.layer3(x)
+        x = self.model.layer4(x)
+        x = self.model.avgpool(x)
+        f_t = x.view(x.size(0), x.size(1))  # pre-BN feature (2048-d, for triplet)
+        f_i = self.bn_neck(f_t)             # BNNeck feature (for ID classification)
+
+        if self.training:
+            logits = self.classifier(f_i)
+            return logits, f_t  # training: (logits, raw feature for metric loss)
+        else:
+            return f_i  # inference: return BN feature
 
 # Define the swin_base_patch4_window7_224 Model
 # pytorch > 1.6

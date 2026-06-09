@@ -18,7 +18,7 @@ import os
 import collections
 from torch.optim import swa_utils
 from tqdm import tqdm
-from model import ft_net, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_convnext, ft_net_convnextv2, ft_net_efficient, ft_net_NAS, PCB, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, ft_net_eva02, set_gem_pooling
+from model import ft_net, ft_net_sbs, ft_net_dense, ft_net_hr, ft_net_swin, ft_net_swinv2, ft_net_dino, ft_net_convnext, ft_net_convnextv2, ft_net_efficient, ft_net_NAS, PCB, ft_net_resnet101, ft_net_resnet152, ft_net_swin_large, ft_net_hgnetv2_b6, ft_net_eva02, set_gem_pooling
 from random_erasing import RandomErasing
 from dgfolder import DGFolder
 import yaml
@@ -73,6 +73,8 @@ parser.add_argument('--use_swin_large', action='store_true', help='use swin larg
 parser.add_argument('--use_hgnetv2_b6', action='store_true', help='use HGNetV2 B6' )
 parser.add_argument('--use_convnextv2', action='store_true', help='use ConvNeXt V2' )
 parser.add_argument('--use_eva02', action='store_true', help='use EVA-02 Large (ViT, CLIP+MIM pretrain)' )
+parser.add_argument('--use_sbs', action='store_true', help='use SBS-ResNet50 (Strong Baseline). Last stride=1 + BNNeck. Paper: Bag of Tricks, Luo et al. CVPRW 2019' )
+parser.add_argument('--use_sbs101', action='store_true', help='use SBS-ResNet101 (Strong Baseline with BNNeck).' )
 parser.add_argument('--gem', action='store_true', help='use GeM pooling (p=3.0). Better than avg pooling for ReID.' )
 parser.add_argument('--gem_p', default=3.0, type=float, help='GeM pooling power. Default 3.0.' )
 # loss
@@ -179,8 +181,8 @@ image_datasets['val'] = datasets.ImageFolder(os.path.join(data_dir, 'val'),
                                           data_transforms['val'])
 
 dataloaders = {x: torch.utils.data.DataLoader(image_datasets[x], batch_size=opt.batchsize,
-                                             shuffle=True, num_workers=2, pin_memory=True, drop_last=True,
-                                             prefetch_factor=2, persistent_workers=True) # 8 workers may work faster
+                                             shuffle=True, num_workers=8, pin_memory=True, drop_last=True,
+                                             prefetch_factor=4, persistent_workers=True)
               for x in ['train', 'val']}
 # Use extra DG-Market Dataset for training. Please download it from https://github.com/NVlabs/DG-Net#dg-market.
 if opt.DG:
@@ -239,8 +241,10 @@ def train_model(model, criterion, optimizer, scheduler, scaler, num_epochs=25):
     warm_iteration = round(dataset_sizes['train']/opt.batchsize)*opt.warm_epoch # first 5 epoch
     if opt.PCB:
         embedding_size = model.classifier0.linear_num
-    else:
+    elif hasattr(model.classifier, 'linear_num'):
         embedding_size = model.classifier.linear_num
+    else:
+        embedding_size = getattr(model, 'linear_num', 512)
     if opt.arcface:
         criterion_arcface = losses.ArcFaceLoss(num_classes=opt.nclasses, embedding_size=embedding_size)
     if opt.cosface: 
@@ -523,6 +527,13 @@ def draw_curve(current_epoch):
 
 return_feature = opt.arcface or opt.cosface or opt.circle or opt.triplet or opt.contrast or opt.instance or opt.lifted or opt.sphere
 
+# SBS-ResNet requires a metric learning loss (e.g. --triplet) to benefit from BNNeck.
+# The model always returns (logits, raw_feature) during training.
+if (opt.use_sbs or opt.use_sbs101) and not return_feature:
+    print('Warning: SBS-ResNet works best with a metric loss (--triplet recommended).')
+    print('Automatically enabling feature return mode.')
+    return_feature = True
+
 if opt.use_dense:
     model = ft_net_dense(len(class_names), opt.droprate, opt.stride, circle = return_feature, linear_num=opt.linear_num)
 elif opt.use_NAS:
@@ -551,6 +562,10 @@ elif opt.use_hgnetv2_b6:
     model = ft_net_hgnetv2_b6(len(class_names), opt.droprate, opt.stride, circle = return_feature, linear_num=opt.linear_num)
 elif opt.use_eva02:
     model = ft_net_eva02(len(class_names), (h, w), opt.droprate, opt.stride, circle = return_feature, linear_num=opt.linear_num)
+elif opt.use_sbs:
+    model = ft_net_sbs(len(class_names), opt.droprate, ibn=opt.ibn, linear_num=opt.linear_num, backbone='resnet50')
+elif opt.use_sbs101:
+    model = ft_net_sbs(len(class_names), opt.droprate, ibn=opt.ibn, linear_num=opt.linear_num, backbone='resnet101')
 else:
     model = ft_net(len(class_names), opt.droprate, opt.stride, circle = return_feature, ibn=opt.ibn, linear_num=opt.linear_num, usam=opt.usam)
 
